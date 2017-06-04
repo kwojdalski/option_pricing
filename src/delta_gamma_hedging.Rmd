@@ -1,0 +1,148 @@
+## Delta-gamma hedging
+
+In this part, I have added gamma hedging. To deploy the strategy, the second option, which pay off is a non-linear function of spot price, is needed. 
+The expected P&L at every portfolio path should be less volatile than in the delta hedging brought in the previous section.
+
+As in the previous case, the whole algorithm was ran 10 times, with 4 rehedges intervals (1, 10, 100, 1000)
+
+```{r delta_gamma_hedging3, include=F,eval=TRUE}
+
+length_<-1:10
+full_results<-c()
+for(i in length_){
+  option <- option_simulation()
+  results_tmp<-cbind(
+    results(rehedges_interval=c(1,10,100,1000),
+            state_space_matrix=option,
+            delta_gamma_hedging = TRUE),
+    i)
+  full_results%<>%rbind(results_tmp)
+}
+
+
+full_results %<>% rename(
+  risk_free_option = Ct,
+  hedged_portfolio_value = pnl,
+  hedged_option_value = value_opt1
+)
+to_filter <- full_results %>% 
+  group_by(i, rehedges_interval) %>% 
+  summarize(mean=mean(hedged_portfolio_value))%>%
+  ungroup()%>%
+  filter(between(mean,10,20))%>%
+  mutate(filterr=paste0(i,'_',rehedges_interval))%$%filterr
+
+to_filter2<-paste0(full_results$i,'_',full_results$rehedges_interval)[full_results$gamma_to_hedge>quantile(full_results$gamma_to_hedge,0.99)]%>%unique()
+full_results%<>%
+  mutate(to_filter3=paste0(i,'_',rehedges_interval))%>%
+  filter(to_filter3 %in% to_filter,
+         !(to_filter3 %in% to_filter2))
+
+
+save(full_results,file='include/full_results_gamma.Rdata')
+
+
+```
+
+
+In the following plot, I have included portfolio value as a function of time. The results are more consistent than in the delta hedging case - value of portfolio in all instances smoothly increases over the time.
+
+```{r plot1_gamma, include=TRUE}
+
+load(file='include/full_results_gamma.Rdata')
+
+
+full_results%>%
+  ggplot(aes(x=t1-time_to_expiration,y=hedged_portfolio_value,colour=as.factor(i)))+
+  facet_wrap(~rehedges_interval,scales='free_y')+
+  geom_line()+
+  theme_economist()+
+  labs(x = "Time",y='Portfolio value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Legend: Facets include rehedges interval. Each coloured line represents $i^th$ iteration. X axis shows Time in the range of $<0, 1>$. Y axis shows the hedged portfolio value.
+
+
+
+
+I have included the following plot, which includes Gamma Ratio, i.e. a ratio between gamma of the first option and gamma of the second option that I used for calculation. As we can see, as time passes this ratio tends to have more variability.
+
+```{r plot2_gamma, include=TRUE,eval=T}    
+
+full_results%>%
+  ggplot(aes(x=t1-time_to_expiration,
+             y=gamma_to_hedge,
+             colour=as.factor(i)))+
+  facet_wrap(~rehedges_interval,scales='free_y')+
+  geom_line()+
+  theme_economist()+
+  labs(x = "Time",y='Value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+
+The next plot shows how 3 different variables, value of the first option, value of the portfolio, and value of the risk-free option, differ.
+In all cases, it can be clearly seen that portfolio value has no spikes in contrast to hedged option value.
+
+```{r plot3_gamma, include=TRUE,eval=T}    
+
+full_results%>%
+  filter(i<6)%>%
+  melt(id.vars=c('time_to_expiration','rehedges_interval','i'),
+       measure.vars = c('hedged_option_value','hedged_portfolio_value','risk_free_option'))%>%
+  ggplot(aes(x=t1-time_to_expiration,y=value,colour=variable))+
+  facet_grid(i~rehedges_interval)+
+  geom_line()+theme_economist()+
+  labs(x = "Time",y='Value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+Legend: Facets include rehedges interval (horizontally) and a number of simulation (vertically). X axis shows Time in the range of $<0, 1>$. Y axis shows the hedged portfolio value.
+
+In the following histogram, I have included $\delta$ P&L for Delta-Gamma Hedging portfolios. They are steeper than in delta hedging portfolios what is consistent with logic.
+
+```{r frequency_plot_gamma, include=TRUE,eval=T}    
+full_results%>%
+  mutate(delta_pnl=round(delta_pnl,2),
+         delta_pnl_f =cut(delta_pnl, breaks = seq(-10,10,by=0.05)))%>%
+  filter(abs(delta_pnl)<=0.3)%>%
+  group_by(rehedges_interval)%>%
+  mutate(noo=n())%>%
+  ungroup()%>%
+  group_by(delta_pnl_f,
+           rehedges_interval)%>%
+  summarize(count=n()/mean(noo))%>%
+  ggplot(aes(x=delta_pnl_f,y=count))+
+  facet_wrap( ~ rehedges_interval) +
+  geom_bar(stat = 'identity') +
+  #coord_cartesian(xlim=c(-0.10,0.10))+
+  theme_economist()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(x = "Delta P&L", y = 'Frequency')
+
+
+```
+Legend: Facets include rehedges interval. X axis shows $\delta$ PnL on the hedged portfolio. Y axis shows a fraction of all observation in a given bin.
+Note: Outliers are not included in the following plot.
+
+The table below includes all basic statistics for delta P&L I have obtained.
+```{r table_of_results_2, include=TRUE, results='asis'}
+library('knitr')
+summary_full<-full_results%>%
+  group_by(rehedges_interval)%>%
+  summarize(mean=mean(delta_pnl,na.rm=T)%>%round(4),
+            sd=sd(delta_pnl,na.rm=T)%>%round(4),
+            `0% quantile`=quantile(delta_pnl,0,na.rm=T)%>%round(4),
+            `25% quantile`=quantile(delta_pnl,0.25,na.rm=T)%>%round(4),
+            `50% quantile`=quantile(delta_pnl,0.5,na.rm=T)%>%round(4),
+            `75% quantile`=quantile(delta_pnl,0.75,na.rm=T)%>%round(4),
+            `100% quantile`=quantile(delta_pnl,1,na.rm=T)%>%round(4))
+
+
+kable(summary_full, format = "latex")
+```
+

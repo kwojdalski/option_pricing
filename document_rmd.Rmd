@@ -1,0 +1,191 @@
+---
+title: "Dynamic Delta and Delta-Gamma Hedging"
+author: "Krzysztof Wojdalski"
+date: '2017-06-06'
+output: pdf_document
+---
+
+```{r setup, include=FALSE,eval=TRUE}
+knitr::opts_chunk$set(echo = FALSE,  eval=T, cache = T, include = T)
+knitr::opts_knit$set(root.dir = normalizePath(".")) 
+if(!'pacman'%in%installed.packages()) install.packages('pacman')
+require(pacman)
+p_load(
+  magrittr,
+  ggplot2,
+  plyr,
+  iterators,
+  xts,
+  fOptions,
+  reshape2,
+  devtools,
+  dplyr, 
+  ggthemes
+)
+
+options(scipen=999, digits=10, digit.secs=3)
+
+
+```
+## Introduction
+
+The purpose for this paper was to check in practice how Delta Hedging and Delta-Gamma Hedging work. Specifically, we were obliged to check results with number of rehedges as a variable. The work was fully designed in R environment with use of R Markdown and several other packages, such as ggplot2, plyr, dplyr, and fOptions.
+The paper is divided into chapters inputs, which contains the data used for the research, Steps, where I describe how I obtained the state space, Delta Hedging, and Delta-Gamma Hedging - in both I present results.
+
+
+## Inputs
+
+I divided inputs into 3 groups - global that consists of variables I use for pricing 2 options and the underlying asset, "First option inputs", which serves as inputs for the hedged option, and "Second option inputs", which serves for option used in Delta-Gamma Hedging.
+
+## Steps
+
+
+The first step  to complete the task was to create a data frame with all spot prices for the underlying asset, and values, $\delta$ and $\gamma$ for both options. To simulate spot price I have used Geometric Brownian motion (under Ito's lemma), given by the formula below:
+$$S_t=S_0\exp((\mu-\frac{\sigma^2}{2})t+\sigma W_t)$$
+
+where:
+$W_t$ is a Wiener process
+$\mu$ is the drift
+$\sigma$ is the volatility
+
+The next step was to create the whole space with option values, the Greeks, time to expiration. It all was saved in a dedicated data frame and could be simulated by
+$option_simulation()$ function. For calculating all option-related values, I have used "fOptions" package. Alternatively, I could have used "RQuantLib" but its results were empirically flawed. 
+
+After obtaining the base for the actual result calculations, I wrote the function for Delta and Delta-Gamma Hedging. This form was the most convenient one as it can be easily implemented for both problems without retyping all the code.
+
+The last step was to apply $results()$ function to both problems. In Delta-Gamma Hedging I received highly ambiguous results, so I tried to test the function on 2 perfectly matched options in terms of all parameters. Results turned out to be as expected. Therefore, I believe my calculations are likely to be correct.
+
+
+
+```{r setup2, include=FALSE}
+
+# $
+# \usepackage{amsmath} S_{t}=S_{0}\timesexp((\mu-\sigma^2/2)t+\sigmaW_{t})$
+
+
+
+# Global inputs
+rf <- 0.05
+S01 <- 100
+mu1 <- 0.2
+
+#First option inputs
+K1 <- 100
+sigma1 <- 0.2
+t1 <- 1
+
+
+#Second option inputs
+K2 <- 90
+sigma2 <- 0.3
+t2 <- 1
+
+
+dt <- 1 / 999
+
+option_simulation<-function(){
+
+  
+  t <- seq(0, t1, by = dt)
+  N <<- length(t)
+  W <- c(0,cumsum(rnorm(N-1)))
+  St <- S01*exp((mu1-sigma1^2/2)*dt + sigma1*sqrt(dt)*W)
+
+
+    option<-c()
+    for(i in 1:length(St-1)){
+
+      opt<-c()
+      opt<-
+      GBSOption(TypeFlag = "c",
+                S = St[i],
+                X = K1,
+                Time =tmp_t<-t1-t[i],
+                r = rf,
+                b = rf,
+                sigma = sigma1)@price
+      
+      
+      opt_tmp<-aaply(c('delta','gamma'),
+                     .margins = 1,
+                     .fun=function(x){
+                       GBSGreeks(TypeFlag = 'c',
+                                 Selection = x,
+                                 S = St[i],
+                                 X = K1,
+                                 Time = (tmp_t <- t1 - t[i]),
+                                 r = rf,
+                                 b = rf,
+                                 sigma = sigma1)
+                       })
+      opt <- cbind(opt, opt_tmp[1], opt_tmp[2]) %>% 
+        set_colnames(c('value_opt1','delta_opt1','gamma_opt1'))
+      
+      opt2<-c()
+      
+      opt2 <- GBSOption(TypeFlag = "c", 
+                        S = St[i],
+                        X = K2,
+                        Time = (tmp_t2 <- t2 - t[i]),
+                        r = rf,
+                        b = rf,
+                        sigma = sigma2)@price
+      
+      
+      opt2_tmp<-aaply(c('delta','gamma'),
+                     .margins=1,
+                     .fun=function(x){      GBSGreeks(TypeFlag = 'c',
+                                                      Selection=x,
+                                                      S = St[i],
+                                                      X = K2,
+                                                      Time =(tmp_t2<-t2-t[i]),
+                                                      r = rf,
+                                                      b = rf,
+                                                      sigma = sigma2)
+                       })
+      
+      opt2<-cbind(opt2,opt2_tmp[1],opt2_tmp[2])%>%
+        set_colnames(c('value_opt2','delta_opt2','gamma_opt2'))
+      
+    
+      tmp <- data.frame(
+        opt,
+        opt2,
+        time_to_expiration = tmp_t,
+        time_to_expiration2 = tmp_t2
+      )
+      
+      
+      option%<>%rbind(tmp)
+      
+    }
+  option%<>%cbind(St,
+                dCt=c(NA,diff(option$value_opt1)),
+                dCt2=c(NA,diff(option$value_opt2)),
+                dSt=c(NA,diff(St)))
+
+
+
+  option%<>%cbind(no=seq(1:nrow(.)))
+
+}
+
+
+
+
+```
+```{r delta_hedging, child='src/delta_hedging.Rmd'}
+```
+
+```{r delta_gamma_hedging, child='src/delta_gamma_hedging.Rmd'}
+```
+
+
+
+## Conclusion
+
+The paper was to show and test how delta and Delta-Gamma Hedging portfolios perform.
+Results that I have obtained are consistent with the expectations, though I found out that gamma should not be hedged when time to expiration is close to 0 and option is deep in- or out-of-money. In such a scenario, gamma ratio $(\frac{\gamma_1}{\gamma_2})$, which serve as an indicator as to how much of an option and an underlying asset should be bought to hedge the portfolio, can be too high. This fact implies highly unpredictable results.
+
+
+

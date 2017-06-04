@@ -1,0 +1,207 @@
+
+## Delta Hedging
+
+After obtaining all needed values, I could start with dynamic Delta Hedging. In the scenario I have used both number of price movements and number of rehedgings vary.
+I tried to capture how both influences deviations of PnL. 
+
+It is needed to be added that number (interval) of rehedgings means that every ith observation (row in a data frame) is used to calibrate the delta to hedge.
+
+```{r function_results, include=FALSE}
+results<-function(rehedges_interval=c(1,5,10,50,100),
+                  state_space_matrix=option_simulation(),
+                  delta_gamma_hedging=FALSE){
+  adply(rehedges_interval,
+        .margins=1,
+        .fun=function(y){
+          
+          share_cost <- rep(0,N)
+          total_cost <- rep(0,N)
+          pnl <-rep(0,N)
+          delta_portfolio<-rep(0,N)
+          delta_of_delta_portfolio<-rep(0,N)
+          # Declaration of variables
+          
+          if(delta_gamma_hedging){
+            gamma_option_cost <- rep(0, N)
+            delta_of_gamma_portfolio <- rep(0, N)
+            # How much option2 we need at time i
+            gamma_ratio <- (state_space_matrix$gamma_opt1 / state_space_matrix$gamma_opt2) 
+            gamma_option_cost[1]<-gamma_ratio[1]*state_space_matrix$value_opt2[1]
+            delta_portfolio[1]<-state_space_matrix$delta_opt1[1]-gamma_ratio[1]*state_space_matrix$delta_opt2[1]
+          }else{
+            delta_portfolio[1]<-state_space_matrix$delta_opt1[1]  
+          }
+          
+          
+          
+          delta_of_delta_portfolio[1]<-0
+          share_cost[1] <- state_space_matrix$St[1] * delta_portfolio[1]
+          total_cost[1] <- share_cost[1] + ifelse(delta_gamma_hedging, gamma_option_cost[1], 0)
+          pnl[1] <-  state_space_matrix$value_opt1[1] - total_cost[1] + share_cost[1] + ifelse(delta_gamma_hedging, gamma_option_cost[1], 0)
+          
+          state_space_matrix%<>%mutate(
+            delta_to_hedge=ifelse(no%%as.numeric(y)==1 | replicate(nrow(state_space_matrix),y)==1,
+                                  delta_opt1, NA)%>% na.locf(na.rm=F))
+          
+          
+          if(delta_gamma_hedging){
+            state_space_matrix%<>%cbind(gamma_ratio) %>% 
+              mutate(gamma_to_hedge=ifelse(no%%as.numeric(y)==1 | replicate(nrow(state_space_matrix),y)==1,gamma_ratio, NA)%>% na.locf(na.rm=F))
+          }
+          
+          
+          for(i in 2:(N)){
+            
+            if(delta_gamma_hedging){
+              delta_portfolio[i] <-state_space_matrix$delta_opt1[i] - state_space_matrix$gamma_to_hedge[i] * state_space_matrix$delta_opt2[i]
+              
+              delta_of_gamma_portfolio[i] <-state_space_matrix$gamma_to_hedge[i]-state_space_matrix$gamma_to_hedge[i-1]
+              gamma_option_cost[i] <-delta_of_gamma_portfolio[i] * 
+                state_space_matrix$value_opt2[i]+gamma_option_cost[i-1] * exp(rf *dt * t1)
+              
+              delta_of_delta_portfolio[i] <-delta_portfolio[i] - delta_portfolio[i - 1]
+              share_cost[i] <- delta_of_delta_portfolio[i] * state_space_matrix$St[i]+share_cost[i-1]* exp(rf *dt * t1)
+              
+              pnl[i]<-state_space_matrix$value_opt1[i]-delta_portfolio[i]*state_space_matrix$St[i]+share_cost[i]-
+                state_space_matrix$gamma_to_hedge[i]*state_space_matrix$value_opt2[i]+gamma_option_cost[i]
+              
+            }else{
+              delta_portfolio[i]<-state_space_matrix$delta_to_hedge[i]
+              delta_of_delta_portfolio[i]<-delta_portfolio[i]-delta_portfolio[i-1]
+              share_cost[i]<-delta_of_delta_portfolio[i]*state_space_matrix$St[i]+share_cost[i-1]*exp(rf*dt*t1)
+              
+              pnl[i]<-state_space_matrix$value_opt1[i]-delta_portfolio[i]*state_space_matrix$St[i]+share_cost[i]
+            }
+            
+          }  
+          
+          state_space_matrix %<>% mutate(
+            pnl=pnl,
+            rehedges_interval=as.factor(y),
+            share_cost=share_cost,
+            total_cost=total_cost,
+            pnl=pnl,
+            delta_pnl=c(NA,diff(pnl)),
+            Ct=state_space_matrix$value_opt1[1]*exp(rf*(state_space_matrix$no)*dt*t1)#,
+            # gamma_option_cost=gamma_option_cost,
+            # delta_portfolio=delta_portfolio
+            
+          )
+          
+          return(state_space_matrix)
+        })
+  
+}
+
+```
+
+```{r delta_hedging, include=FALSE,eval=T}
+
+
+
+length_<-1:10
+full_results<-c()
+for(i in length_){
+  option<-option_simulation()
+  results_tmp<-cbind(results(rehedges_interval=c(1,10,100,1000),
+                             state_space_matrix=option,
+                             delta_gamma_hedging = FALSE),
+                     i)
+  full_results%<>%rbind(results_tmp)
+}
+
+full_results%<>%rename(risk_free_option=Ct, hedged_portfolio_value=pnl, hedged_option_value=value_opt1)
+
+
+save(full_results,file='include/full_results_delta.Rdata')
+load(file='include/full_results_delta.Rdata')
+
+```
+
+Two plots are shown below. As we can see, when number of rehedgings increase, results are better, i.e. lines are smoother. It is crucial to mention that difference between value of hedged portfolio against risk-free equivalent comes mostly from the existence of $\gamma$. To polish the strategy, gamma hedging is implemented.
+
+```{r plot1, include=FALSE,cache.vars=T}
+
+full_results%>% 
+  filter(i<=10)%>%
+  ggplot(aes(x=t1-time_to_expiration,y=hedged_portfolio_value,colour=as.factor(rehedges_interval)))+
+  facet_wrap(~i)+
+  geom_line()+
+  theme_economist()+
+  labs(x = "Time",y='Portfolio value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r plot5, include=TRUE,cache.vars=T}
+full_results%>%
+  ggplot(aes(x=t1-time_to_expiration,y=hedged_portfolio_value,colour=as.factor(i)))+
+  facet_wrap(~rehedges_interval,scales='free_y')+
+  geom_line()+
+  theme_economist()+
+  labs(x = "Time",y='Portfolio value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Legend: Facets include rehedges interval. Each coloured line represents $i^th$ iteration. X axis shows Time in the range of $<0, 1>$. Y axis shows the hedged portfolio value.
+
+```{r plot2, include=TRUE}    
+
+full_results%>%
+  filter(i<6)%>%
+  melt(id.vars=c('time_to_expiration','rehedges_interval','i'),
+       measure.vars = c('hedged_option_value','hedged_portfolio_value','risk_free_option'))%>%
+  ggplot(aes(x=t1-time_to_expiration,y=value,colour=variable))+
+  facet_grid(i~rehedges_interval)+
+  geom_line()+theme_economist()+
+  labs(x = "Time",y='Value')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+Legend: Facets include rehedges interval (horizontally) and a number of simulation (vertically). X axis shows Time in the range of $<0, 1>$. Y axis shows the hedged portfolio value.
+
+I have included PnLs of every price movement for 10 simulations, all with parametrized rehedges interval (every 1st, 10th, 100th, 1000th), which is shown below. It can be clearly seen that as interval of rehedging decreases, distribution gets steeper.
+
+
+```{r frequency_plot_delta, include=TRUE}
+
+
+full_results%>%
+  mutate(delta_pnl=round(delta_pnl,2),
+         delta_pnl_f =cut(delta_pnl, breaks = seq(-10,10,by=0.05)))%>%
+  filter(abs(delta_pnl)<=0.4)%>%
+  group_by(rehedges_interval)%>%
+  mutate(noo=n())%>%
+  ungroup()%>%
+  group_by(delta_pnl_f,
+           rehedges_interval)%>%
+  summarize(count=n()/mean(noo))%>%
+  ggplot(aes(x=delta_pnl_f,y=count))+
+  facet_wrap(~rehedges_interval)+      
+  geom_bar(stat='identity')+
+  #coord_cartesian(xlim=c(-0.10,0.10))+
+  theme_economist()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  labs(x = "Delta P&L",y='Frequency')    
+
+
+
+```
+
+Legend: Facets include rehedges interval. X axis shows $\delta$ PnL on the hedged portfolio. Y axis shows a fraction of all observation in a given bin.
+
+```{r table_of_results, include=TRUE, results='asis'}
+library('knitr')
+summary_full<-full_results%>%
+  group_by(rehedges_interval)%>%
+  summarize(mean=mean(delta_pnl,na.rm=T)%>%round(4),
+            sd=sd(delta_pnl,na.rm=T)%>%round(4),
+            `0% quantile`=quantile(delta_pnl,0,na.rm=T)%>%round(4),
+            `25% quantile`=quantile(delta_pnl,0.25,na.rm=T)%>%round(4),
+            `50% quantile`=quantile(delta_pnl,0.5,na.rm=T)%>%round(4),
+            `75% quantile`=quantile(delta_pnl,0.75,na.rm=T)%>%round(4),
+            `100% quantile`=quantile(delta_pnl,1,na.rm=T)%>%round(4))
+
+
+kable(summary_full, format = "latex")
+```
